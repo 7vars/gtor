@@ -6,13 +6,13 @@ GOMOD=$(GOCMD) mod
 GOTIDY=$(GOMOD) tidy
 GOTOOL=$(GOCMD) tool
 
-.PHONY: tidy
-tidy:
-	$(GOTIDY)
-
 .PHONY: test
 test: tidy
 	$(GOTEST) -coverprofile cover.out -v ./...
+
+.PHONY: tidy
+tidy:
+	$(GOTIDY)
 
 .PHONY: cover
 cover: test
