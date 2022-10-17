@@ -2,10 +2,10 @@ package rx
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"sync/atomic"
+
+	"github.com/google/uuid"
 )
 
 type Source struct {
@@ -26,27 +26,6 @@ func (s Source) HandleCancel(out Outlet) {
 		s.OnCancel(out)
 		return
 	}
-	out.Complete()
-}
-
-type SourceFunc[T any] func() (T, error)
-
-func (f SourceFunc[T]) HandleStartup() {}
-
-func (f SourceFunc[T]) HandlePull(out Outlet) {
-	t, err := f()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			out.Complete()
-			return
-		}
-		out.Error(err)
-		return
-	}
-	out.Push(t)
-}
-
-func (f SourceFunc[T]) HandleCancel(out Outlet) {
 	out.Complete()
 }
 
@@ -96,7 +75,7 @@ func (src *sourceStage) RunWith(ctx context.Context, sink SinkStage) <-chan inte
 	src.pipeline = newPipe(sink.Commands(), EmitterChan(emits))
 
 	go func(c context.Context, in <-chan interface{}, out chan<- interface{}) {
-		defer fmt.Println("DEBUG RUNNER CLOSED")
+		defer fmt.Println("DEBUG SOURCE-RUNNER CLOSED")
 		defer close(out)
 		for {
 			select {
@@ -118,6 +97,21 @@ func (src *sourceStage) RunWith(ctx context.Context, sink SinkStage) <-chan inte
 	return channel
 }
 
+func (src *sourceStage) Via(flow FlowStage) SourceStage {
+	if src.pipeline != nil {
+		// TODO Broadcast (FanOut)
+		panic("source already connected")
+	}
+
+	src.pipeline = newPipe(flow.Commands(), nil)
+
+	go sourceWorker(src.abort, src.handler, src.pipeline)
+
+	flow.Connected(src.pipeline)
+
+	return flow
+}
+
 // ===== sources =====
 
 func SliceSource[T any](slice []T) SourceStage {
@@ -132,4 +126,30 @@ func SliceSource[T any](slice []T) SourceStage {
 			o.Complete()
 		},
 	})
+}
+
+func UUIDSource() SourceStage {
+	return NewSource(Source{
+		OnPull: func(o Outlet) {
+			o.Push(uuid.New().String())
+		},
+	})
+}
+
+func CountSource(start int64, inc int64, end int64) SourceStage {
+	cur := start
+	return NewSource(Source{
+		OnPull: func(o Outlet) {
+			defer atomic.AddInt64(&cur, inc)
+			if c := atomic.LoadInt64(&cur); c < end {
+				o.Push(c)
+				return
+			}
+			o.Complete()
+		},
+	})
+}
+
+func IncSource() SourceStage {
+	return CountSource(0, 1, int64(^uint64(0)>>1))
 }

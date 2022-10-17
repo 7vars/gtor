@@ -65,3 +65,35 @@ func (em *emittable) Pull() {
 func (em *emittable) Cancel() {
 	em.inlet.Cancel()
 }
+
+type iolet struct {
+	outlet Outlet
+	inlet  Inlet
+}
+
+func newIOlet(outlet Outlet, inlet Inlet) IOlet {
+	return &iolet{
+		outlet: outlet,
+		inlet:  inlet,
+	}
+}
+
+func (io *iolet) Push(v interface{}) {
+	io.outlet.Push(v)
+}
+
+func (io *iolet) Error(err error) {
+	io.outlet.Error(err)
+}
+
+func (io *iolet) Complete() {
+	io.outlet.Complete()
+}
+
+func (io *iolet) Pull() {
+	io.inlet.Pull()
+}
+
+func (io *iolet) Cancel() {
+	io.inlet.Cancel()
+}

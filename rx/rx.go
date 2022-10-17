@@ -55,6 +55,7 @@ type SourceHandler interface {
 
 type SourceStage interface {
 	RunWith(context.Context, SinkStage) <-chan interface{}
+	Via(FlowStage) SourceStage
 }
 
 type Inline interface {
@@ -77,6 +78,29 @@ type SinkHandler interface {
 type SinkStage interface {
 	Commands() <-chan Command
 	Connected(Inline)
+}
+
+type IOlet interface {
+	Push(interface{})
+	Error(error)
+	Complete()
+
+	Pull()
+	Cancel()
+}
+
+type FlowHandler interface {
+	HandlePull(IOlet)
+	HandleCancel(IOlet)
+
+	HandlePush(IOlet, interface{})
+	HandleError(IOlet, error)
+	HandleComplete(IOlet)
+}
+
+type FlowStage interface {
+	SinkStage
+	SourceStage
 }
 
 // ==============================================

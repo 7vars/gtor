@@ -39,31 +39,6 @@ func (s Sink) HandleComplete(in Inlet) {
 	in.Emit(gtor.DONE())
 }
 
-type SinkFunc[T any] func(T)
-
-func (f SinkFunc[T]) HandleStartup() {}
-
-func (f SinkFunc[T]) HandlePush(in Inlet, v interface{}) {
-	if t, ok := v.(T); ok {
-		f(t)
-		in.Pull()
-		return
-	}
-	var t0 T
-	in.Emit(fmt.Errorf("unsupported type %T need %T", v, t0))
-	in.Cancel()
-}
-
-func (f SinkFunc[T]) HandleError(in Inlet, err error) {
-	in.Emit(err)
-	in.Cancel()
-}
-
-func (f SinkFunc[T]) HandleComplete(in Inlet) {
-	defer in.Close()
-	in.Emit(gtor.DONE())
-}
-
 // ==============================================
 
 type sinkStage struct {
@@ -116,6 +91,10 @@ func (sink *sinkStage) Connected(inline Inline) {
 }
 
 // ===== sinks =====
+
+func Empty() SinkStage {
+	return NewSink(Sink{})
+}
 
 func ForEach[T any](f func(T)) SinkStage {
 	return NewSink(Sink{
