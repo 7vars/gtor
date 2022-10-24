@@ -2,7 +2,6 @@ package rx
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 )
@@ -28,8 +27,8 @@ func Broadcast() FanOutStage {
 }
 
 func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
-	fmt.Println("DEBUG BROADCAST-INLINE STARTED")
-	defer fmt.Println("DEBUG BROADCAST-INLINE CLOSED")
+	// fmt.Println("DEBUG BROADCAST-INLINE STARTED")
+	// defer fmt.Println("DEBUG BROADCAST-INLINE CLOSED")
 	defer inline.Cancel()
 	send := func(evt Event, outs ...Outlet) {
 		for _, out := range outs {
@@ -55,8 +54,8 @@ func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
 }
 
 func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []Pipe, removePipe func(int)) {
-	fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
-	defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
+	// fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
+	// defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
 	defer close(pulls)
 	for {
 		pipes := getPipes()
@@ -101,7 +100,7 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []Pipe, remov
 func (b *broadcast) run() {
 	b.Lock()
 	defer b.Unlock()
-	fmt.Println("DEBUG BROADCAST-RUN EXECUTED", b.active, b.flowOrRunnablePresent)
+	// fmt.Println("DEBUG BROADCAST-RUN EXECUTED", b.active, b.flowOrRunnablePresent)
 	if !b.active && b.flowOrRunnablePresent {
 		b.active = true
 		go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
