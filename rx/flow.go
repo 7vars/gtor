@@ -1,7 +1,6 @@
 package rx
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +8,22 @@ import (
 	"sync"
 	"sync/atomic"
 )
+
+var ErrNext = errors.New("next")
+
+type FlowStage interface {
+	SourceStage
+	SinkStage
+}
+
+type FlowHandler interface {
+	HandlePull(IOlet)
+	HandleCancel(IOlet)
+
+	HandlePush(IOlet, interface{})
+	HandleError(IOlet, error)
+	HandleComplete(IOlet)
+}
 
 type Flow struct {
 	OnPull   func(IOlet)
@@ -59,129 +74,120 @@ func (f Flow) HandleComplete(io IOlet) {
 	io.Complete()
 }
 
-// ==============================================
-
 type flowStage struct {
-	handler  FlowHandler
-	commands chan Command
-	abort    chan struct{}
-	pipeline *pipe
-	inline   Inline
+	handler FlowHandler
+	pipe    Pipe
+	inline  Inline
 }
 
 func NewFlow(handler FlowHandler) FlowStage {
 	return &flowStage{
-		handler:  handler,
-		commands: make(chan Command, 100), // TODO configure size
-		abort:    make(chan struct{}, 1),
+		handler: handler,
 	}
 }
 
-func flowWorker(abort <-chan struct{}, handler FlowHandler, outline Outline, inline Inline, iolet IOlet, onComplete func()) {
-	defer fmt.Println("DEBUG FLOW CLOSED")
+func flowWorker(handler FlowHandler, pipe Pipe) {
+	defer fmt.Println("DEBUG FLOW-WORK CLOSED")
+	var eventsClosed, commandsClosed bool
 	for {
 		select {
-		case <-abort:
-			return
-		case evt, open := <-outline.Commands():
+		case evt, open := <-pipe.Events():
 			if !open {
-				return
-			}
-			switch evt {
-			case PULL:
-				handler.HandlePull(iolet)
-			case CANCEL:
-				handler.HandleCancel(iolet)
-			}
-		case evt, open := <-inline.Events():
-			if !open {
-				return
-			}
-			if evt.IsCompleted() {
-				defer onComplete()
-				handler.HandleComplete(iolet)
-				return
-			}
-			if evt.IsError() {
-				handler.HandleError(iolet, evt.Err)
-				continue
-			}
-			handler.HandlePush(iolet, evt.Data)
-		}
-	}
-}
-
-// ===== SinkStage-Part =====
-
-func (f *flowStage) Commands() <-chan Command {
-	return f.commands
-}
-
-func (f *flowStage) start() {
-	if f.pipeline != nil && f.inline != nil {
-		iolet := newIOlet(f.pipeline, InletChan(f.commands))
-		defer iolet.Pull()
-		go flowWorker(f.abort, f.handler, f.pipeline, f.inline, iolet, func() { close(f.commands) })
-	}
-}
-
-func (f *flowStage) Connected(inline Inline) {
-	// TODO handle FanIn
-	f.inline = inline
-	f.start()
-}
-
-// ===== SourceStage-Part =====
-
-func (f *flowStage) RunWith(ctx context.Context, sink SinkStage) <-chan interface{} {
-	if f.pipeline != nil {
-		// TODO Broadcast (FanOut)
-		panic("flow already connected")
-	}
-
-	emits := make(chan interface{}, 100) // TODO configure size
-	channel := make(chan interface{}, 1)
-	f.pipeline = newPipe(sink.Commands(), EmitterChan(emits))
-
-	go func(c context.Context, in <-chan interface{}, out chan<- interface{}) {
-		defer fmt.Println("DEBUG FLOW-RUNNER CLOSED")
-		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case v, open := <-in:
-				if !open {
+				if commandsClosed {
 					return
 				}
-				out <- v
+				eventsClosed = true
+				continue
+			}
+			switch evt.Type() {
+			case PUSH:
+				handler.HandlePush(pipe, evt.Data)
+			case ERROR:
+				handler.HandleError(pipe, evt.Err)
+			case COMPLETE:
+				handler.HandleComplete(pipe)
+			}
+		case cmd, open := <-pipe.Commands():
+			if !open {
+				if eventsClosed {
+					return
+				}
+				commandsClosed = true
+				continue
+			}
+			switch cmd {
+			case PULL:
+				handler.HandlePull(pipe)
+			case CANCEL:
+				handler.HandleCancel(pipe)
 			}
 		}
-	}(ctx, emits, channel)
+	}
+}
 
-	f.start()
+func (f *flowStage) run() {
+	if f.pipe != nil && f.inline != nil {
+		go flowWorker(f.handler, combineIO(f.inline, f.pipe, f.pipe))
+	}
+}
 
-	sink.Connected(f.pipeline)
+func (f *flowStage) connect(sink SinkStage, createPipe func() Pipe) error {
+	if f.pipe != nil {
+		return errors.New("source is already connected")
+	}
+	f.pipe = createPipe()
 
-	return channel
+	if err := sink.Connected(f.pipe); err != nil {
+		f.pipe = nil
+		return err
+	}
+
+	f.run()
+	return nil
+}
+
+func (f *flowStage) Connect(sink SinkStage) error {
+	return f.connect(sink, newPipe)
 }
 
 func (f *flowStage) Via(flow FlowStage) SourceStage {
-	if f.pipeline != nil {
-		// TODO Broadcast (FanOut)
-		panic("flow already connected")
+	if err := f.Connect(flow); err != nil {
+		errSrc := errorSource(err)
+		return errSrc.Via(flow)
 	}
-
-	f.pipeline = newPipe(flow.Commands(), nil)
-
-	f.start()
-
-	flow.Connected(f.pipeline)
-
 	return flow
 }
 
-// ===== sinks =====
+func (f *flowStage) To(sink SinkStage) error {
+	if err := f.Connect(sink); err != nil {
+		return err
+	}
+	f.pipe.Pull()
+	return nil
+}
+
+func (f *flowStage) RunWith(sink SinkStage) Runnable {
+	pipe := newPipe()
+	runnable := newRunnable(pipe)
+	pipe.SetEmitter(runnable)
+
+	if err := f.connect(sink, func() Pipe { return pipe }); err != nil {
+		return runnableWithError{err}
+	}
+
+	return runnable
+}
+
+func (f *flowStage) Connected(inline EmittableInline) error {
+	if f.inline != nil {
+		return errors.New("flow is already connected")
+	}
+	f.inline = inline
+	f.run()
+	return nil
+}
+
+// ===== flows =====
 
 func FlowFunc[T, K any](f func(T) (K, error)) FlowStage {
 	return NewFlow(Flow{

@@ -1,93 +1,87 @@
 package rx
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/7vars/gtor"
 )
 
+type SinkStage interface {
+	Connected(EmittableInline) error
+}
+
+type SinkHandler interface {
+	HandlePush(Emittable, interface{})
+	HandleError(Emittable, error)
+	HandleComplete(Emittable)
+}
+
 type Sink struct {
-	OnPush     func(Inlet, interface{})
-	OnError    func(Inlet, error)
-	OnComplete func(Inlet)
+	OnPush     func(Emittable, interface{})
+	OnError    func(Emittable, error)
+	OnComplete func(Emittable)
 }
 
-func (s Sink) HandlePush(in Inlet, v interface{}) {
+func (s Sink) HandlePush(i Emittable, v interface{}) {
 	if s.OnPush != nil {
-		s.OnPush(in, v)
+		s.OnPush(i, v)
 		return
 	}
-	in.Pull()
+	i.Pull()
 }
 
-func (s Sink) HandleError(in Inlet, err error) {
+func (s Sink) HandleError(i Emittable, e error) {
 	if s.OnError != nil {
-		s.OnError(in, err)
+		s.OnError(i, e)
 		return
 	}
-	in.Emit(err)
-	in.Cancel()
+	i.EmitError(e)
+	i.Cancel()
 }
 
-func (s Sink) HandleComplete(in Inlet) {
-	defer in.Close()
+func (s Sink) HandleComplete(i Emittable) {
+	defer i.Close()
 	if s.OnComplete != nil {
-		s.OnComplete(in)
+		s.OnComplete(i)
 		return
 	}
-	in.Emit(gtor.DONE())
+	i.Emit(gtor.DONE())
 }
-
-// ==============================================
 
 type sinkStage struct {
-	handler  SinkHandler
-	abort    chan struct{}
-	commands chan Command
+	handler SinkHandler
+	inline  EmittableInline
 }
 
 func NewSink(handler SinkHandler) SinkStage {
 	return &sinkStage{
-		handler:  handler,
-		abort:    make(chan struct{}, 1),
-		commands: make(chan Command, 100), // TODO configure size
+		handler: handler,
 	}
 }
 
-func sinkWorker(abort <-chan struct{}, handler SinkHandler, inline Inline, inlet Inlet, onComplete func()) {
-	defer fmt.Println("DEBUG SINK CLOSED")
-	for {
-		select {
-		case <-abort:
-			return
-		case evt, open := <-inline.Events():
-			if !open {
-				return
-			}
-			if evt.IsCompleted() {
-				defer onComplete()
-				handler.HandleComplete(inlet)
-				return
-			}
-			if evt.IsError() {
-				handler.HandleError(inlet, evt.Err)
-				continue
-			}
-			handler.HandlePush(inlet, evt.Data)
+func sinkWorker(handler SinkHandler, inline EmittableInline) {
+	defer fmt.Println("DEBUG SINK-WORK CLOSED")
+	for evt := range inline.Events() {
+		switch evt.Type() {
+		case PUSH:
+			handler.HandlePush(inline, evt.Data)
+		case ERROR:
+			handler.HandleError(inline, evt.Err)
+		case COMPLETE:
+			handler.HandleComplete(inline)
 		}
 	}
 }
 
-func (sink *sinkStage) Commands() <-chan Command {
-	return sink.commands
-}
-
-func (sink *sinkStage) Connected(inline Inline) {
-	// TODO handle fanIn
-	inlet := Emittable(inline, InletChan(sink.commands))
-	defer inlet.Pull()
-	go sinkWorker(sink.abort, sink.handler, inline, inlet, func() { close(sink.commands) })
+func (snk *sinkStage) Connected(inline EmittableInline) error {
+	if snk.inline != nil {
+		return errors.New("sink is already connected")
+	}
+	snk.inline = inline
+	go sinkWorker(snk.handler, snk.inline)
+	return nil
 }
 
 // ===== sinks =====
@@ -98,16 +92,22 @@ func Empty() SinkStage {
 
 func ForEach[T any](f func(T)) SinkStage {
 	return NewSink(Sink{
-		OnPush: func(in Inlet, v interface{}) {
+		OnPush: func(in Emittable, v interface{}) {
 			if t, ok := v.(T); ok {
 				f(t)
 				in.Pull()
 				return
 			}
 			var t0 T
-			in.Emit(fmt.Errorf("unsupported type %T needs %T", v, t0))
+			in.EmitError(fmt.Errorf("unsupported type %T needs %T", v, t0))
 			in.Cancel()
 		},
+	})
+}
+
+func Println() SinkStage {
+	return ForEach(func(v interface{}) {
+		fmt.Println(v)
 	})
 }
 
@@ -116,7 +116,7 @@ func Collect[T any]() SinkStage {
 	slice := make([]T, 0)
 	var hasError bool
 	return NewSink(Sink{
-		OnPush: func(in Inlet, v interface{}) {
+		OnPush: func(in Emittable, v interface{}) {
 			m.Lock()
 			defer m.Unlock()
 			if t, ok := v.(T); ok {
@@ -126,10 +126,10 @@ func Collect[T any]() SinkStage {
 			}
 			hasError = true
 			var t0 T
-			in.Emit(fmt.Errorf("unsupported type %T needs %T", v, t0))
+			in.EmitError(fmt.Errorf("unsupported type %T needs %T", v, t0))
 			in.Cancel()
 		},
-		OnComplete: func(in Inlet) {
+		OnComplete: func(in Emittable) {
 			m.Lock()
 			defer m.Unlock()
 			if !hasError {

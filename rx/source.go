@@ -1,118 +1,126 @@
 package rx
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
 	"github.com/google/uuid"
 )
 
+type SourceStage interface {
+	Connect(SinkStage) error
+	Via(FlowStage) SourceStage
+	To(SinkStage) error
+	RunWith(SinkStage) Runnable
+}
+
+type SourceHandler interface {
+	HandlePull(Outlet)
+	HandleCancel(Outlet)
+}
+
 type Source struct {
 	OnPull   func(Outlet)
 	OnCancel func(Outlet)
 }
 
-func (s Source) HandlePull(out Outlet) {
-	if s.OnPull != nil {
-		s.OnPull(out)
+func (src Source) HandlePull(o Outlet) {
+	if src.OnPull != nil {
+		src.OnPull(o)
 		return
 	}
-	out.Complete()
+	o.Complete()
 }
 
-func (s Source) HandleCancel(out Outlet) {
-	if s.OnCancel != nil {
-		s.OnCancel(out)
+func (src Source) HandleCancel(o Outlet) {
+	if src.OnCancel != nil {
+		src.OnCancel(o)
 		return
 	}
-	out.Complete()
+	o.Complete()
 }
-
-// ==============================================
 
 type sourceStage struct {
-	handler  SourceHandler
-	abort    chan struct{}
-	pipeline *pipe
+	handler SourceHandler
+	pipe    Pipe
 }
 
 func NewSource(handler SourceHandler) SourceStage {
 	return &sourceStage{
 		handler: handler,
-		abort:   make(chan struct{}, 1),
 	}
 }
 
-func sourceWorker(abort <-chan struct{}, handler SourceHandler, outline Outline) {
-	defer fmt.Println("DEBUG SOURCE CLOSED")
-	for {
-		select {
-		case <-abort:
+func sourceWorker(handler SourceHandler, outline Outline) {
+	defer fmt.Println("DEBUG SOURCE-WORK CLOSED")
+	for cmd := range outline.Commands() {
+		switch cmd {
+		case PULL:
+			handler.HandlePull(outline)
+		case CANCEL:
+			handler.HandleCancel(outline)
 			return
-		case evt, open := <-outline.Commands():
-			if !open {
-				return
-			}
-			switch evt {
-			case PULL:
-				handler.HandlePull(outline)
-			case CANCEL:
-				handler.HandleCancel(outline)
-			}
 		}
 	}
 }
 
-func (src *sourceStage) RunWith(ctx context.Context, sink SinkStage) <-chan interface{} {
-	if src.pipeline != nil {
-		// TODO Broadcast (FanOut)
-		panic("source already connected")
+func (src *sourceStage) connect(sin SinkStage, createPipe func() Pipe) error {
+	if src.pipe != nil {
+		return errors.New("source is already connected")
+	}
+	src.pipe = createPipe()
+
+	if err := sin.Connected(src.pipe); err != nil {
+		src.pipe = nil
+		return err
 	}
 
-	emits := make(chan interface{}, 100) // TODO configure size
-	channel := make(chan interface{}, 1)
-	src.pipeline = newPipe(sink.Commands(), EmitterChan(emits))
+	go sourceWorker(src.handler, src.pipe)
+	return nil
+}
 
-	go func(c context.Context, in <-chan interface{}, out chan<- interface{}) {
-		defer fmt.Println("DEBUG SOURCE-RUNNER CLOSED")
-		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case v, open := <-in:
-				if !open {
-					return
-				}
-				out <- v
-			}
-		}
-	}(ctx, emits, channel)
-
-	go sourceWorker(src.abort, src.handler, src.pipeline)
-
-	sink.Connected(src.pipeline)
-
-	return channel
+func (src *sourceStage) Connect(sin SinkStage) error {
+	return src.connect(sin, newPipe)
 }
 
 func (src *sourceStage) Via(flow FlowStage) SourceStage {
-	if src.pipeline != nil {
-		// TODO Broadcast (FanOut)
-		panic("source already connected")
+	if err := src.Connect(flow); err != nil {
+		errSrc := errorSource(err)
+		return errSrc.Via(flow)
 	}
-
-	src.pipeline = newPipe(flow.Commands(), nil)
-
-	go sourceWorker(src.abort, src.handler, src.pipeline)
-
-	flow.Connected(src.pipeline)
-
 	return flow
 }
 
+func (src *sourceStage) To(sink SinkStage) error {
+	if err := src.Connect(sink); err != nil {
+		return err
+	}
+	src.pipe.Pull()
+	return nil
+}
+
+func (src *sourceStage) RunWith(sink SinkStage) Runnable {
+	pipe := newPipe()
+	runnable := newRunnable(pipe)
+	pipe.SetEmitter(runnable)
+
+	if err := src.connect(sink, func() Pipe { return pipe }); err != nil {
+		return runnableWithError{err}
+	}
+
+	return runnable
+}
+
 // ===== sources =====
+
+func errorSource(err error) SourceStage {
+	return NewSource(Source{
+		OnPull: func(o Outlet) {
+			o.Error(err)
+		},
+	})
+}
 
 func SliceSource[T any](slice []T) SourceStage {
 	var index int64
