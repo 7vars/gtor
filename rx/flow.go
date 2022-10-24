@@ -87,7 +87,7 @@ func NewFlow(handler FlowHandler) FlowStage {
 }
 
 func flowWorker(handler FlowHandler, pipe Pipe) {
-	defer fmt.Println("DEBUG FLOW-WORK CLOSED")
+	// defer fmt.Println("DEBUG FLOW-WORK CLOSED")
 	var eventsClosed, commandsClosed bool
 	for {
 		select {
@@ -133,7 +133,7 @@ func (f *flowStage) run() {
 
 func (f *flowStage) connect(sink SinkStage, createPipe func() Pipe) error {
 	if f.pipe != nil {
-		return errors.New("source is already connected")
+		return errors.New("flow is already connected")
 	}
 	f.pipe = createPipe()
 

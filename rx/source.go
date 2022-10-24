@@ -2,7 +2,7 @@ package rx
 
 import (
 	"errors"
-	"fmt"
+	"io"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -53,7 +53,7 @@ func NewSource(handler SourceHandler) SourceStage {
 }
 
 func sourceWorker(handler SourceHandler, outline Outline) {
-	defer fmt.Println("DEBUG SOURCE-WORK CLOSED")
+	// defer fmt.Println("DEBUG SOURCE-WORK CLOSED")
 	for cmd := range outline.Commands() {
 		switch cmd {
 		case PULL:
@@ -113,6 +113,23 @@ func (src *sourceStage) RunWith(sink SinkStage) Runnable {
 }
 
 // ===== sources =====
+
+func SourceFunc[T any](f func() (T, error)) SourceStage {
+	return NewSource(Source{
+		OnPull: func(o Outlet) {
+			v, err := f()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					o.Complete()
+					return
+				}
+				o.Error(err)
+				return
+			}
+			o.Push(v)
+		},
+	})
+}
 
 func errorSource(err error) SourceStage {
 	return NewSource(Source{
