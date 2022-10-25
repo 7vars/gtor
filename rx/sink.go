@@ -1,7 +1,6 @@
 package rx
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 
@@ -9,7 +8,13 @@ import (
 )
 
 type SinkStage interface {
-	Connected(EmittableInline) error
+	Stage
+	Connected(Inline)
+}
+
+type EmitterSinkStage interface {
+	Emitter
+	SinkStage
 }
 
 type SinkHandler interface {
@@ -51,18 +56,24 @@ func (s Sink) HandleComplete(i Emittable) {
 }
 
 type sinkStage struct {
+	sync.RWMutex
 	handler SinkHandler
-	inline  EmittableInline
+	inline  Inline
+	closed  bool
+	emits   chan interface{}
 }
 
-func NewSink(handler SinkHandler) SinkStage {
+func NewSink(handler SinkHandler) EmitterSinkStage {
 	return &sinkStage{
 		handler: handler,
+		emits:   make(chan interface{}, 1),
 	}
 }
 
 func sinkWorker(handler SinkHandler, inline EmittableInline) {
-	// defer fmt.Println("DEBUG SINK-WORK CLOSED")
+	inline.Pull()
+	fmt.Println("DEBUG SINK-WORK STARTED")
+	defer fmt.Println("DEBUG SINK-WORK CLOSED")
 	for evt := range inline.Events() {
 		switch evt.Type() {
 		case PUSH:
@@ -75,22 +86,59 @@ func sinkWorker(handler SinkHandler, inline EmittableInline) {
 	}
 }
 
-func (snk *sinkStage) Connected(inline EmittableInline) error {
+func (snk *sinkStage) start() {
+	go sinkWorker(snk.handler, newEmittableInline(snk.inline, snk))
+}
+
+func (snk *sinkStage) Connected(inline Inline) {
+	snk.Lock()
+	defer snk.Unlock()
 	if snk.inline != nil {
-		return errors.New("sink is already connected")
+		// TODO autocreate FanIn
+		panic("sink is already connected")
 	}
 	snk.inline = inline
-	go sinkWorker(snk.handler, snk.inline)
-	return nil
+}
+
+func (snk *sinkStage) isClosed() bool {
+	snk.RLock()
+	defer snk.RUnlock()
+	return snk.closed
+}
+
+func (snk *sinkStage) Emits() <-chan interface{} {
+	return snk.emits
+}
+
+func (snk *sinkStage) Emit(v interface{}) {
+	if !snk.isClosed() {
+		snk.emits <- v
+	}
+}
+
+func (snk *sinkStage) EmitError(e error) {
+	if !snk.isClosed() {
+		snk.emits <- e
+		snk.Close()
+	}
+}
+
+func (snk *sinkStage) Close() {
+	snk.Lock()
+	defer snk.Unlock()
+	if !snk.closed {
+		close(snk.emits)
+		snk.closed = true
+	}
 }
 
 // ===== sinks =====
 
-func Empty() SinkStage {
+func Empty() EmitterSinkStage {
 	return NewSink(Sink{})
 }
 
-func ForEach[T any](f func(T)) SinkStage {
+func ForEach[T any](f func(T)) EmitterSinkStage {
 	return NewSink(Sink{
 		OnPush: func(in Emittable, v interface{}) {
 			if t, ok := v.(T); ok {
@@ -105,13 +153,13 @@ func ForEach[T any](f func(T)) SinkStage {
 	})
 }
 
-func Println() SinkStage {
+func Println() EmitterSinkStage {
 	return ForEach(func(v interface{}) {
 		fmt.Println(v)
 	})
 }
 
-func Collect[T any]() SinkStage {
+func Collect[T any]() EmitterSinkStage {
 	var m sync.Mutex
 	slice := make([]T, 0)
 	var hasError bool

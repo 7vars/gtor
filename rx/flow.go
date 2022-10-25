@@ -87,7 +87,8 @@ func NewFlow(handler FlowHandler) FlowStage {
 }
 
 func flowWorker(handler FlowHandler, pipe Pipe) {
-	// defer fmt.Println("DEBUG FLOW-WORK CLOSED")
+	fmt.Println("DEBUG FLOW-WORK STARTED")
+	defer fmt.Println("DEBUG FLOW-WORK CLOSED")
 	var eventsClosed, commandsClosed bool
 	for {
 		select {
@@ -125,66 +126,26 @@ func flowWorker(handler FlowHandler, pipe Pipe) {
 	}
 }
 
-func (f *flowStage) run() {
-	if f.pipe != nil && f.inline != nil {
-		go flowWorker(f.handler, combineIO(f.inline, f.pipe, f.pipe))
-	}
+func (f *flowStage) start() {
+	go flowWorker(f.handler, combineIO(f.inline, f.pipe))
 }
 
-func (f *flowStage) connect(sink SinkStage, createPipe func() Pipe) error {
+func (f *flowStage) connect(sink SinkStage) {
 	if f.pipe != nil {
-		return errors.New("flow is already connected")
+		// TODO autocreate FanOut
+		panic("flow is already connected")
 	}
-	f.pipe = createPipe()
+	f.pipe = newPipe()
 
-	if err := sink.Connected(f.pipe); err != nil {
-		f.pipe = nil
-		return err
-	}
-
-	f.run()
-	return nil
+	sink.Connected(f.pipe)
 }
 
-func (f *flowStage) Connect(sink SinkStage) error {
-	return f.connect(sink, newPipe)
-}
-
-func (f *flowStage) Via(flow FlowStage) SourceStage {
-	if err := f.Connect(flow); err != nil {
-		errSrc := errorSource(err)
-		return errSrc.Via(flow)
-	}
-	return flow
-}
-
-func (f *flowStage) To(sink SinkStage) error {
-	if err := f.Connect(sink); err != nil {
-		return err
-	}
-	f.pipe.Pull()
-	return nil
-}
-
-func (f *flowStage) RunWith(sink SinkStage) Runnable {
-	pipe := newPipe()
-	runnable := newRunnable(pipe)
-	pipe.SetEmitter(runnable)
-
-	if err := f.connect(sink, func() Pipe { return pipe }); err != nil {
-		return runnableWithError{err}
-	}
-
-	return runnable
-}
-
-func (f *flowStage) Connected(inline EmittableInline) error {
+func (f *flowStage) Connected(inline Inline) {
 	if f.inline != nil {
-		return errors.New("flow is already connected")
+		// TODO autocreate FanIn
+		panic("flow is already connected")
 	}
 	f.inline = inline
-	f.run()
-	return nil
 }
 
 // ===== flows =====

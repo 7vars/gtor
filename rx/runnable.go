@@ -2,71 +2,50 @@ package rx
 
 import (
 	"context"
-	"sync"
+	"fmt"
 
 	"github.com/7vars/gtor"
 )
 
-type Runnable interface {
-	Run() <-chan interface{}
-	RunWithContext(context.Context) <-chan interface{}
-	Execute() (interface{}, error)
-	ExecuteWithContext(context.Context) (interface{}, error)
+type runner struct {
+	emitter Emitter
+	onStart func()
+}
+
+func newRunner(emitter Emitter, onStart func()) Runner {
+	return &runner{
+		emitter: emitter,
+		onStart: onStart,
+	}
+}
+
+func (r *runner) Run() {
+	r.onStart()
+	<-r.emitter.Emits()
 }
 
 type runnable struct {
-	sync.RWMutex
-	closed bool
-	emits  chan interface{}
-	inlet  Inlet
+	emitter Emitter
+	onStart func()
 }
 
-func newRunnable(inlet Inlet) *runnable {
+func newRunnable(emitter Emitter, onStart func()) *runnable {
 	return &runnable{
-		emits: make(chan interface{}, 1),
-		inlet: inlet,
-	}
-}
-
-func (r *runnable) isClosed() bool {
-	r.RLock()
-	defer r.RUnlock()
-	return r.closed
-}
-
-func (r *runnable) Emit(v interface{}) {
-	if !r.isClosed() {
-		r.emits <- v
-	}
-}
-
-func (r *runnable) EmitError(e error) {
-	if !r.isClosed() {
-		r.emits <- e
-		r.Close()
+		emitter: emitter,
+		onStart: onStart,
 	}
 }
 
 func (r *runnable) accidentlyClose() {
-	r.inlet.Cancel()
-	r.Close()
-}
-
-func (r *runnable) Close() {
-	r.Lock()
-	defer r.Unlock()
-	if !r.closed {
-		close(r.emits)
-		r.closed = true
-	}
+	r.emitter.Close()
 }
 
 func (r *runnable) RunWithContext(ctx context.Context) <-chan interface{} {
 	out := make(chan interface{}, 1)
-	r.inlet.Pull()
+	r.onStart()
 
 	go func() {
-		// defer fmt.Println("DEBUG RUNNABLE-WORK CLOSED")
+		defer fmt.Println("DEBUG RUNNABLE-WORK CLOSED")
 		defer close(out)
 		for {
 			select {
@@ -74,7 +53,7 @@ func (r *runnable) RunWithContext(ctx context.Context) <-chan interface{} {
 				defer r.accidentlyClose()
 				out <- ctx.Err()
 				return
-			case e, open := <-r.emits:
+			case e, open := <-r.emitter.Emits():
 				if !open {
 					return
 				}
@@ -123,27 +102,4 @@ func (r *runnable) ExecuteWithContext(ctx context.Context) (interface{}, error) 
 
 func (r *runnable) Execute() (interface{}, error) {
 	return r.ExecuteWithContext(context.Background())
-}
-
-type runnableWithError struct {
-	Err error
-}
-
-func (rwe runnableWithError) Run() <-chan interface{} {
-	out := make(chan interface{}, 1)
-	defer close(out)
-	out <- rwe.Err
-	return out
-}
-
-func (rwe runnableWithError) RunWithContext(context.Context) <-chan interface{} {
-	return rwe.Run()
-}
-
-func (rwe runnableWithError) Execute() (interface{}, error) {
-	return nil, rwe.Err
-}
-
-func (rwe runnableWithError) ExecuteWithContext(context.Context) (interface{}, error) {
-	return rwe.Execute()
 }

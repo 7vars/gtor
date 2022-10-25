@@ -64,13 +64,8 @@ type IOlet interface {
 	Outlet
 }
 
-type EmittableInline interface {
-	Emittable
-	Inline
-	SetEmitter(Emitter)
-}
-
 type Emitter interface {
+	Emits() <-chan interface{}
 	Emit(interface{})
 	EmitError(error)
 	Close()
@@ -81,9 +76,59 @@ type Emittable interface {
 	Emitter
 }
 
+type EmittableInline interface {
+	Emittable
+	Inline
+}
+
+type emittableInline struct {
+	inline  Inline
+	emitter Emitter
+}
+
+func newEmittableInline(inline Inline, emitter Emitter) EmittableInline {
+	return &emittableInline{
+		inline:  inline,
+		emitter: emitter,
+	}
+}
+
+func (ei *emittableInline) Events() <-chan Event {
+	return ei.inline.Events()
+}
+
+func (ei *emittableInline) Pull() {
+	ei.inline.Pull()
+}
+
+func (ei *emittableInline) Cancel() {
+	ei.inline.Cancel()
+}
+
+func (ei *emittableInline) Emits() <-chan interface{} {
+	return ei.emitter.Emits()
+}
+
+func (ei *emittableInline) Emit(v interface{}) {
+	ei.emitter.Emit(v)
+}
+
+func (ei *emittableInline) EmitError(e error) {
+	ei.emitter.EmitError(e)
+}
+
+func (ei *emittableInline) Close() {
+	ei.emitter.Close()
+}
+
 type Pipe interface {
-	EmittableInline
+	Inline
 	Outline
+}
+
+type StagePipe interface {
+	Stage
+	Pipe
 }
 
 type pipe struct {
@@ -92,14 +137,25 @@ type pipe struct {
 	commandsClosed bool
 	events         chan Event
 	commands       chan Command
-	emitter        Emitter
+	onStart        func()
 }
 
 func newPipe() Pipe {
+	return newStagePipe(func() {})
+}
+
+func newStagePipe(onStart func()) StagePipe {
 	return &pipe{
 		events:   make(chan Event, 1),
 		commands: make(chan Command, 1),
+		onStart:  onStart,
 	}
+}
+
+// ===== Stage =====
+
+func (p *pipe) start() {
+	p.onStart()
 }
 
 // ===== Inline =====
@@ -177,41 +233,15 @@ func (p *pipe) Complete() {
 	}
 }
 
-// ====== Emitter =====
-
-func (p *pipe) SetEmitter(emitter Emitter) {
-	p.emitter = emitter
-}
-
-func (p *pipe) Emit(v interface{}) {
-	if p.emitter != nil {
-		p.emitter.Emit(v)
-	}
-}
-
-func (p *pipe) EmitError(e error) {
-	if p.emitter != nil {
-		p.emitter.EmitError(e)
-	}
-}
-
-func (p *pipe) Close() {
-	if p.emitter != nil {
-		p.emitter.Close()
-	}
-}
-
 type combinedPipe struct {
 	inline  Inline
 	outline Outline
-	emitter Emitter
 }
 
-func combineIO(inline Inline, outline Outline, emitter Emitter) Pipe {
+func combineIO(inline Inline, outline Outline) Pipe {
 	return &combinedPipe{
 		inline:  inline,
 		outline: outline,
-		emitter: emitter,
 	}
 }
 
@@ -241,26 +271,4 @@ func (p *combinedPipe) Pull() {
 
 func (p *combinedPipe) Cancel() {
 	p.inline.Cancel()
-}
-
-func (p *combinedPipe) SetEmitter(emitter Emitter) {
-	p.emitter = emitter
-}
-
-func (p *combinedPipe) Emit(v interface{}) {
-	if p.emitter != nil {
-		p.emitter.Emit(v)
-	}
-}
-
-func (p *combinedPipe) EmitError(e error) {
-	if p.emitter != nil {
-		p.emitter.EmitError(e)
-	}
-}
-
-func (p *combinedPipe) Close() {
-	if p.emitter != nil {
-		p.emitter.Close()
-	}
 }

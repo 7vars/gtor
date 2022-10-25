@@ -1,7 +1,7 @@
 package rx
 
 import (
-	"errors"
+	"fmt"
 	"sort"
 	"sync"
 )
@@ -12,23 +12,21 @@ type FanOutStage interface {
 
 type broadcast struct {
 	sync.RWMutex
-	pipes                 []Pipe
-	inline                Inline
-	active                bool
-	flowOrRunnablePresent bool
-	pulls                 chan []Outlet
+	pipes  []StagePipe
+	inline Inline
+	pulls  chan []Outlet
 }
 
 func Broadcast() FanOutStage {
 	return &broadcast{
-		pipes: make([]Pipe, 0),
+		pipes: make([]StagePipe, 0),
 		pulls: make(chan []Outlet, 1),
 	}
 }
 
 func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
-	// fmt.Println("DEBUG BROADCAST-INLINE STARTED")
-	// defer fmt.Println("DEBUG BROADCAST-INLINE CLOSED")
+	fmt.Println("DEBUG BROADCAST-INLINE STARTED")
+	defer fmt.Println("DEBUG BROADCAST-INLINE CLOSED")
 	defer inline.Cancel()
 	send := func(evt Event, outs ...Outlet) {
 		for _, out := range outs {
@@ -53,9 +51,9 @@ func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
 	}
 }
 
-func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []Pipe, removePipe func(int)) {
-	// fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
-	// defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
+func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []StagePipe, removePipe func(int)) {
+	fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
+	defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
 	defer close(pulls)
 	for {
 		pipes := getPipes()
@@ -76,7 +74,7 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []Pipe, remov
 			case PULL:
 				outlets = append(outlets, pipe)
 			case CANCEL:
-				// TODO if primary send cancel to inline
+				// TODO if primary/last send cancel to inline
 				pipe.Complete()
 				removes = append(removes, i)
 			}
@@ -97,25 +95,23 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []Pipe, remov
 	}
 }
 
-func (b *broadcast) run() {
-	b.Lock()
-	defer b.Unlock()
-	// fmt.Println("DEBUG BROADCAST-RUN EXECUTED", b.active, b.flowOrRunnablePresent)
-	if !b.active && b.flowOrRunnablePresent {
-		b.active = true
-		go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
+func (b *broadcast) start() {
+	for _, pipe := range b.getPipes() {
+		pipe.start()
 	}
+	go broadcastInlineWorker(b.pulls, b.inline)
+	go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
 }
 
-func (b *broadcast) getPipes() []Pipe {
+func (b *broadcast) getPipes() []StagePipe {
 	b.Lock()
 	defer b.Unlock()
-	result := make([]Pipe, len(b.pipes))
+	result := make([]StagePipe, len(b.pipes))
 	copy(result, b.pipes)
 	return result
 }
 
-func (b *broadcast) addPipe(pipe Pipe) {
+func (b *broadcast) addPipe(pipe StagePipe) {
 	b.Lock()
 	defer b.Unlock()
 	b.pipes = append(b.pipes, pipe)
@@ -129,76 +125,18 @@ func (b *broadcast) removePipe(index int) {
 	}
 }
 
-func (b *broadcast) connect(sink SinkStage, createPipe func() Pipe) error {
-	pipe := createPipe()
-	if err := sink.Connected(pipe); err != nil {
-		return err
-	}
-
+func (b *broadcast) connect(sink SinkStage) {
+	pipe := newStagePipe(sink.start)
+	sink.Connected(pipe)
 	b.addPipe(pipe)
-
-	return nil
 }
 
-func (b *broadcast) Connect(sink SinkStage) error {
-	pipe := newPipe()
-	if err := b.connect(sink, func() Pipe { return pipe }); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (b *broadcast) Via(flow FlowStage) SourceStage {
-	pipe := newPipe()
-	if err := b.connect(flow, func() Pipe { return pipe }); err != nil {
-		errSrc := errorSource(err)
-		return errSrc.Via(flow)
-	}
-
-	b.Lock()
-	defer b.run()
-	defer b.Unlock()
-	b.flowOrRunnablePresent = true
-
-	return flow
-}
-
-func (b *broadcast) To(sink SinkStage) error {
-	pipe := newPipe()
-	if err := b.connect(sink, func() Pipe { return pipe }); err != nil {
-		return err
-	}
-
-	pipe.Pull()
-
-	return nil
-}
-
-func (b *broadcast) RunWith(sink SinkStage) Runnable {
-	pipe := newPipe()
-	runnable := newRunnable(pipe)
-	pipe.SetEmitter(runnable)
-
-	if err := b.connect(sink, func() Pipe { return pipe }); err != nil {
-		return runnableWithError{err}
-	}
-
-	b.Lock()
-	defer b.run()
-	defer b.Unlock()
-	b.flowOrRunnablePresent = true
-
-	return runnable
-}
-
-func (b *broadcast) Connected(inline EmittableInline) error {
+func (b *broadcast) Connected(inline Inline) {
 	b.Lock()
 	defer b.Unlock()
 	if b.inline != nil {
-		return errors.New("broadcast is already connected")
+		// TODO autocreate FanIn
+		panic("broadcast is already connected")
 	}
 	b.inline = inline
-	go broadcastInlineWorker(b.pulls, b.inline)
-	return nil
 }
