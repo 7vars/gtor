@@ -1,6 +1,7 @@
 package rx
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -28,7 +29,7 @@ func (fi *fanin) start() {
 		for _, inline := range fi.inlines {
 			inline.start()
 		}
-		go mergeWorker(fi.pipe, fi.inlines...)
+		go fi.worker(fi.pipe, fi.inlines...)
 	}
 }
 
@@ -44,6 +45,74 @@ func (fi *fanin) connect(sink SinkStage) Inline {
 
 func (fi *fanin) Connected(inline StageInline) {
 	fi.inlines = append(fi.inlines, inline)
+}
+
+// ===== join =====
+
+func Join() FanInStage {
+	return newJoinStage(func(v []interface{}) (interface{}, error) { return v, nil })
+}
+
+func Zip[T any](f func([]interface{}) (T, error)) FanInStage {
+	return newJoinStage(func(tuple []interface{}) (interface{}, error) {
+		return f(tuple)
+	})
+}
+
+func newJoinStage(handler func([]interface{}) (interface{}, error)) FanInStage {
+	return NewFanIn(joinWorker(handler))
+}
+
+func joinWorker(handler func([]interface{}) (interface{}, error)) func(Outline, ...StageInline) {
+	return func(outline Outline, inlines ...StageInline) {
+		for cmd := range outline.Commands() {
+			switch cmd {
+			case PULL:
+				if len(inlines) == 0 {
+					outline.Complete()
+					return
+				}
+
+				results := make([]interface{}, 0)
+				errs := make([]error, 0)
+				for _, inline := range inlines {
+					inline.Pull()
+					evt := <-inline.Events()
+					switch evt.Type() {
+					case PUSH:
+						results = append(results, evt.Data)
+					case ERROR:
+						errs = append(errs, evt.Err)
+					case COMPLETE:
+						outline.Complete()
+						return
+					}
+				}
+
+				result, err := handler(results)
+				if err != nil {
+					errs = append(errs, err)
+				}
+
+				if len(errs) > 0 {
+					err := errs[0]
+					for i := 1; i < len(errs); i++ {
+						err = fmt.Errorf("caused by: %w", errs[i])
+					}
+					outline.Error(err)
+					continue
+				}
+
+				outline.Push(result)
+			case CANCEL:
+				for _, inline := range inlines {
+					inline.Cancel()
+				}
+				outline.Complete()
+				return
+			}
+		}
+	}
 }
 
 // ===== merge =====
