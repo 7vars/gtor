@@ -11,3 +11,5 @@ type Close struct{}
 
 // events
 type Done struct{}
+
+func DONE() Done { return Done{} }
