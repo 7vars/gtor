@@ -8,16 +8,48 @@ type FanInStage interface {
 	FlowStage
 }
 
-type merge struct {
+type fanin struct {
 	active  bool
+	worker  func(outline Outline, inlines ...StageInline)
 	inlines []StageInline
 	pipe    Pipe
 }
 
-func Merge() FanInStage {
-	return &merge{
+func NewFanIn(worker func(outline Outline, inlines ...StageInline)) FanInStage {
+	return &fanin{
+		worker:  worker,
 		inlines: make([]StageInline, 0),
 	}
+}
+
+func (fi *fanin) start() {
+	if !fi.active {
+		fi.active = true
+		for _, inline := range fi.inlines {
+			inline.start()
+		}
+		go mergeWorker(fi.pipe, fi.inlines...)
+	}
+}
+
+func (fi *fanin) connect(sink SinkStage) Inline {
+	if fi.pipe != nil {
+		// TODO autocreate fanout/bradcast
+		panic("merge is already connected")
+	}
+	fi.pipe = newPipe()
+
+	return fi.pipe
+}
+
+func (fi *fanin) Connected(inline StageInline) {
+	fi.inlines = append(fi.inlines, inline)
+}
+
+// ===== merge =====
+
+func Merge() FanInStage {
+	return NewFanIn(mergeWorker)
 }
 
 func mergeInlineWorker(wg *sync.WaitGroup, pulls <-chan chan<- Event, inline Inline) {
@@ -81,28 +113,4 @@ func mergeWorker(outline Outline, inlines ...StageInline) {
 
 	wg.Wait()
 	close(events)
-}
-
-func (m *merge) start() {
-	if !m.active {
-		m.active = true
-		for _, inline := range m.inlines {
-			inline.start()
-		}
-		go mergeWorker(m.pipe, m.inlines...)
-	}
-}
-
-func (m *merge) connect(sink SinkStage) Inline {
-	if m.pipe != nil {
-		// TODO autocreate fanout/bradcast
-		panic("merge is already connected")
-	}
-	m.pipe = newPipe()
-
-	return m.pipe
-}
-
-func (m *merge) Connected(inline StageInline) {
-	m.inlines = append(m.inlines, inline)
 }
