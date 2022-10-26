@@ -16,7 +16,7 @@ type Stage interface {
 
 type SourceStage interface {
 	Stage
-	connect(SinkStage)
+	connect(SinkStage) Inline
 }
 
 type Runner interface {
@@ -64,6 +64,7 @@ func (src Source) HandleCancel(o Outlet) {
 }
 
 type composedSourceStage struct {
+	active bool
 	parent Stage
 	source SourceStage
 }
@@ -76,19 +77,22 @@ func composeSourceStage(parent Stage, source SourceStage) SourceGraph {
 }
 
 func (css *composedSourceStage) start() {
-	css.parent.start()
-	css.source.start()
+	if !css.active {
+		css.active = true
+		css.parent.start()
+		css.source.start()
+	}
 }
 
-func (css *composedSourceStage) connect(sink SinkStage) {}
+func (css *composedSourceStage) connect(sink SinkStage) Inline { return nil }
 
 func (css *composedSourceStage) Via(flow FlowStage) SourceGraph {
-	css.source.connect(flow)
+	flow.Connected(newStageInline(css.source.connect(flow), css.start))
 	return composeSourceStage(css, flow)
 }
 
 func (css *composedSourceStage) To(sink EmitterSinkStage) Runner {
-	css.source.connect(sink)
+	sink.Connected(newStageInline(css.source.connect(sink), css.start))
 	return newRunner(sink, func() {
 		sink.start()
 		css.start()
@@ -96,7 +100,7 @@ func (css *composedSourceStage) To(sink EmitterSinkStage) Runner {
 }
 
 func (css *composedSourceStage) RunWith(sink EmitterSinkStage) Runnable {
-	css.source.connect(sink)
+	sink.Connected(newStageInline(css.source.connect(sink), css.start))
 	return newRunnable(sink, func() {
 		sink.start()
 		css.start()
@@ -104,6 +108,7 @@ func (css *composedSourceStage) RunWith(sink EmitterSinkStage) Runnable {
 }
 
 type sourceStage struct {
+	active  bool
 	handler SourceHandler
 	pipe    Pipe
 }
@@ -129,26 +134,29 @@ func sourceWorker(handler SourceHandler, outline Outline) {
 }
 
 func (src *sourceStage) start() {
-	go sourceWorker(src.handler, src.pipe)
+	if !src.active {
+		go sourceWorker(src.handler, src.pipe)
+		src.active = true
+	}
 }
 
-func (src *sourceStage) connect(sin SinkStage) {
+func (src *sourceStage) connect(sin SinkStage) Inline {
 	if src.pipe != nil {
 		// TODO autocreate FanOut / Broadcast
 		panic("source is already connected")
 	}
 	src.pipe = newPipe()
 
-	sin.Connected(src.pipe)
+	return src.pipe
 }
 
 func (src *sourceStage) Via(flow FlowStage) SourceGraph {
-	src.connect(flow)
+	flow.Connected(newStageInline(src.connect(flow), src.start))
 	return composeSourceStage(src, flow)
 }
 
 func (src *sourceStage) To(sink EmitterSinkStage) Runner {
-	src.connect(sink)
+	sink.Connected(newStageInline(src.connect(sink), src.start))
 	return newRunner(sink, func() {
 		sink.start()
 		src.start()
@@ -156,7 +164,7 @@ func (src *sourceStage) To(sink EmitterSinkStage) Runner {
 }
 
 func (src *sourceStage) RunWith(sink EmitterSinkStage) Runnable {
-	src.connect(sink)
+	sink.Connected(newStageInline(src.connect(sink), src.start))
 	return newRunnable(sink, func() {
 		sink.start()
 		src.start()

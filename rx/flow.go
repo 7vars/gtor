@@ -75,6 +75,7 @@ func (f Flow) HandleComplete(io IOlet) {
 }
 
 type flowStage struct {
+	active  bool
 	handler FlowHandler
 	pipe    Pipe
 	inline  Inline
@@ -127,20 +128,23 @@ func flowWorker(handler FlowHandler, pipe Pipe) {
 }
 
 func (f *flowStage) start() {
-	go flowWorker(f.handler, combineIO(f.inline, f.pipe))
+	if !f.active {
+		go flowWorker(f.handler, combineIO(f.inline, f.pipe))
+		f.active = true
+	}
 }
 
-func (f *flowStage) connect(sink SinkStage) {
+func (f *flowStage) connect(sink SinkStage) Inline {
 	if f.pipe != nil {
 		// TODO autocreate FanOut
 		panic("flow is already connected")
 	}
 	f.pipe = newPipe()
 
-	sink.Connected(f.pipe)
+	return f.pipe
 }
 
-func (f *flowStage) Connected(inline Inline) {
+func (f *flowStage) Connected(inline StageInline) {
 	if f.inline != nil {
 		// TODO autocreate FanIn
 		panic("flow is already connected")

@@ -9,7 +9,7 @@ import (
 
 type SinkStage interface {
 	Stage
-	Connected(Inline)
+	Connected(StageInline)
 }
 
 type EmitterSinkStage interface {
@@ -57,6 +57,7 @@ func (s Sink) HandleComplete(i Emittable) {
 
 type sinkStage struct {
 	sync.RWMutex
+	active  bool
 	handler SinkHandler
 	inline  Inline
 	closed  bool
@@ -87,12 +88,15 @@ func sinkWorker(handler SinkHandler, inline EmittableInline) {
 }
 
 func (snk *sinkStage) start() {
-	go sinkWorker(snk.handler, newEmittableInline(snk.inline, snk))
-}
-
-func (snk *sinkStage) Connected(inline Inline) {
 	snk.Lock()
 	defer snk.Unlock()
+	if !snk.active {
+		go sinkWorker(snk.handler, newEmittableInline(snk.inline, snk))
+		snk.active = true
+	}
+}
+
+func (snk *sinkStage) Connected(inline StageInline) {
 	if snk.inline != nil {
 		// TODO autocreate FanIn
 		panic("sink is already connected")

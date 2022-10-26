@@ -11,10 +11,11 @@ type FanOutStage interface {
 }
 
 type broadcast struct {
-	sync.RWMutex
-	pipes  []StagePipe
-	inline Inline
-	pulls  chan []Outlet
+	sync.RWMutex // TODO remove, not needed anymore
+	active       bool
+	pipes        []StagePipe
+	inline       Inline
+	pulls        chan []Outlet
 }
 
 func Broadcast() FanOutStage {
@@ -96,11 +97,15 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []StagePipe, 
 }
 
 func (b *broadcast) start() {
-	for _, pipe := range b.getPipes() {
-		pipe.start()
+	if !b.active {
+		b.active = true
+		for _, pipe := range b.getPipes() {
+			pipe.start()
+		}
+
+		go broadcastInlineWorker(b.pulls, b.inline)
+		go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
 	}
-	go broadcastInlineWorker(b.pulls, b.inline)
-	go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
 }
 
 func (b *broadcast) getPipes() []StagePipe {
@@ -125,13 +130,13 @@ func (b *broadcast) removePipe(index int) {
 	}
 }
 
-func (b *broadcast) connect(sink SinkStage) {
+func (b *broadcast) connect(sink SinkStage) Inline {
 	pipe := newStagePipe(sink.start)
-	sink.Connected(pipe)
 	b.addPipe(pipe)
+	return pipe
 }
 
-func (b *broadcast) Connected(inline Inline) {
+func (b *broadcast) Connected(inline StageInline) {
 	b.Lock()
 	defer b.Unlock()
 	if b.inline != nil {

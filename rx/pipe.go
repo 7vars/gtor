@@ -59,6 +59,27 @@ type Inline interface {
 	Events() <-chan Event
 }
 
+type StageInline interface {
+	Stage
+	Inline
+}
+
+type stageInline struct {
+	Inline
+	onStart func()
+}
+
+func newStageInline(inline Inline, onStart func()) StageInline {
+	return &stageInline{
+		Inline:  inline,
+		onStart: onStart,
+	}
+}
+
+func (si *stageInline) start() {
+	si.onStart()
+}
+
 type IOlet interface {
 	Inlet
 	Outlet
