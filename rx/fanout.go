@@ -3,26 +3,57 @@ package rx
 import (
 	"fmt"
 	"sort"
-	"sync"
 )
 
 type FanOutStage interface {
 	FlowStage
 }
 
-type broadcast struct {
-	sync.RWMutex // TODO remove, not needed anymore
-	active       bool
-	pipes        []StagePipe
-	inline       Inline
-	pulls        chan []Outlet
+type fanout struct {
+	active bool
+	worker func(Inline, ...Outline)
+	pipes  []StagePipe
+	inline Inline
 }
 
-func Broadcast() FanOutStage {
-	return &broadcast{
-		pipes: make([]StagePipe, 0),
-		pulls: make(chan []Outlet, 1),
+func NewFanOut(worker func(Inline, ...Outline)) FanOutStage {
+	return &fanout{
+		worker: worker,
+		pipes:  make([]StagePipe, 0),
 	}
+}
+
+func (fo *fanout) start() {
+	if !fo.active {
+		fo.active = true
+		outlines := make([]Outline, len(fo.pipes))
+		for i, pipe := range fo.pipes {
+			pipe.start()
+			outlines[i] = pipe
+		}
+
+		go fo.worker(fo.inline, outlines...)
+	}
+}
+
+func (fo *fanout) connect(sink SinkStage) Inline {
+	pipe := newStagePipe(sink.start)
+	fo.pipes = append(fo.pipes, pipe)
+	return pipe
+}
+
+func (fo *fanout) Connected(inline StageInline) {
+	if fo.inline != nil {
+		// TODO autocreate FanIn
+		panic("broadcast is already connected")
+	}
+	fo.inline = inline
+}
+
+// ===== broadcast =====
+
+func Broadcast() FanOutStage {
+	return NewFanOut(broadcastWorker)
 }
 
 func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
@@ -52,31 +83,29 @@ func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
 	}
 }
 
-func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []StagePipe, removePipe func(int)) {
+func broadcastOutlineWorker(pulls chan<- []Outlet, outlines ...Outline) {
 	fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
 	defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
 	defer close(pulls)
 	for {
-		pipes := getPipes()
-
-		if len(pipes) == 0 {
+		if len(outlines) == 0 {
 			return
 		}
 
 		outlets := make([]Outlet, 0)
 		removes := make([]int, 0)
-		for i, pipe := range pipes {
-			cmd, open := <-pipe.Commands()
+		for i, outline := range outlines {
+			cmd, open := <-outline.Commands()
 			if !open {
 				removes = append(removes, i)
 				continue
 			}
 			switch cmd {
 			case PULL:
-				outlets = append(outlets, pipe)
+				outlets = append(outlets, outline)
 			case CANCEL:
 				// TODO if primary/last send cancel to inline
-				pipe.Complete()
+				outline.Complete()
 				removes = append(removes, i)
 			}
 		}
@@ -85,7 +114,9 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []StagePipe, 
 			return removes[i] > removes[j]
 		})
 		for _, index := range removes {
-			removePipe(index)
+			if index >= 0 && index < len(outlines) {
+				outlines = append(outlines[:index], outlines[:index+1]...)
+			}
 		}
 
 		if len(outlets) == 0 {
@@ -96,52 +127,8 @@ func broadcastOutlineWorker(pulls chan<- []Outlet, getPipes func() []StagePipe, 
 	}
 }
 
-func (b *broadcast) start() {
-	if !b.active {
-		b.active = true
-		for _, pipe := range b.getPipes() {
-			pipe.start()
-		}
-
-		go broadcastInlineWorker(b.pulls, b.inline)
-		go broadcastOutlineWorker(b.pulls, b.getPipes, b.removePipe)
-	}
-}
-
-func (b *broadcast) getPipes() []StagePipe {
-	b.Lock()
-	defer b.Unlock()
-	result := make([]StagePipe, len(b.pipes))
-	copy(result, b.pipes)
-	return result
-}
-
-func (b *broadcast) addPipe(pipe StagePipe) {
-	b.Lock()
-	defer b.Unlock()
-	b.pipes = append(b.pipes, pipe)
-}
-
-func (b *broadcast) removePipe(index int) {
-	b.Lock()
-	defer b.Unlock()
-	if index >= 0 && index < len(b.pipes) {
-		b.pipes = append(b.pipes[:index], b.pipes[:index+1]...)
-	}
-}
-
-func (b *broadcast) connect(sink SinkStage) Inline {
-	pipe := newStagePipe(sink.start)
-	b.addPipe(pipe)
-	return pipe
-}
-
-func (b *broadcast) Connected(inline StageInline) {
-	b.Lock()
-	defer b.Unlock()
-	if b.inline != nil {
-		// TODO autocreate FanIn
-		panic("broadcast is already connected")
-	}
-	b.inline = inline
+func broadcastWorker(inline Inline, outlines ...Outline) {
+	pulls := make(chan []Outlet, 1)
+	go broadcastInlineWorker(pulls, inline)
+	go broadcastOutlineWorker(pulls, outlines...)
 }
