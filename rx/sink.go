@@ -73,8 +73,6 @@ func NewSink(handler SinkHandler) EmitterSinkStage {
 
 func sinkWorker(handler SinkHandler, inline EmittableInline) {
 	inline.Pull()
-	fmt.Println("DEBUG SINK-WORK STARTED")
-	defer fmt.Println("DEBUG SINK-WORK CLOSED")
 	for evt := range inline.Events() {
 		switch evt.Type() {
 		case PUSH:

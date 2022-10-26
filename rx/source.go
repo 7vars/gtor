@@ -3,7 +3,6 @@ package rx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"sync/atomic"
 
@@ -120,8 +119,6 @@ func NewSource(handler SourceHandler) SourceGraph {
 }
 
 func sourceWorker(handler SourceHandler, outline Outline) {
-	fmt.Println("DEBUG SOURCE-WORK STARTED")
-	defer fmt.Println("DEBUG SOURCE-WORK CLOSED")
 	for cmd := range outline.Commands() {
 		switch cmd {
 		case PULL:

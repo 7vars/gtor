@@ -2,7 +2,6 @@ package rx
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7vars/gtor"
 )
@@ -45,7 +44,6 @@ func (r *runnable) RunWithContext(ctx context.Context) <-chan interface{} {
 	r.onStart()
 
 	go func() {
-		defer fmt.Println("DEBUG RUNNABLE-WORK CLOSED")
 		defer close(out)
 		for {
 			select {

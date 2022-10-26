@@ -88,8 +88,6 @@ func NewFlow(handler FlowHandler) FlowStage {
 }
 
 func flowWorker(handler FlowHandler, pipe Pipe) {
-	fmt.Println("DEBUG FLOW-WORK STARTED")
-	defer fmt.Println("DEBUG FLOW-WORK CLOSED")
 	var eventsClosed, commandsClosed bool
 	for {
 		select {

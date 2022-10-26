@@ -1,7 +1,6 @@
 package rx
 
 import (
-	"fmt"
 	"sort"
 )
 
@@ -57,8 +56,6 @@ func Broadcast() FanOutStage {
 }
 
 func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
-	fmt.Println("DEBUG BROADCAST-INLINE STARTED")
-	defer fmt.Println("DEBUG BROADCAST-INLINE CLOSED")
 	defer inline.Cancel()
 	send := func(evt Event, outs ...Outlet) {
 		for _, out := range outs {
@@ -84,8 +81,6 @@ func broadcastInlineWorker(pulls <-chan []Outlet, inline Inline) {
 }
 
 func broadcastOutlineWorker(pulls chan<- []Outlet, outlines ...Outline) {
-	fmt.Println("DEBUG BROADCAST-OUTLINE STARTED")
-	defer fmt.Println("DEBUG BROADCAST-OUTLINE CLOSED")
 	defer close(pulls)
 	for {
 		if len(outlines) == 0 {

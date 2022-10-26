@@ -122,7 +122,6 @@ func Merge() FanInStage {
 }
 
 func mergeInlineWorker(wg *sync.WaitGroup, pulls <-chan chan<- Event, inline Inline) {
-	// defer fmt.Println("DEBUG MERGE-INLINE-WORK CLOSED")
 	defer wg.Done()
 	for pull := range pulls {
 		inline.Pull()
@@ -139,7 +138,6 @@ func mergeInlineWorker(wg *sync.WaitGroup, pulls <-chan chan<- Event, inline Inl
 }
 
 func mergeOutlineWorker(pulls chan<- chan<- Event, events chan Event, outline Outline) {
-	// defer fmt.Println("DEBUG MERGE-INLINE-WORK CLOSED")
 	defer close(pulls)
 	for cmd := range outline.Commands() {
 		switch cmd {
@@ -168,7 +166,6 @@ func mergeOutlineWorker(pulls chan<- chan<- Event, events chan Event, outline Ou
 }
 
 func mergeWorker(outline Outline, inlines ...StageInline) {
-	// defer fmt.Println("DEBUG MERGE-WORK CLOSED")
 	var wg sync.WaitGroup
 	pulls := make(chan chan<- Event, 1)
 	events := make(chan Event)
